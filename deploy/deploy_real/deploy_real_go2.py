@@ -41,7 +41,21 @@ class Controller:
         self.config = config
         self.remote_controller = RemoteController()
 
-        self.policy = torch.jit.load(config.policy_path)
+        # self.policy = torch.jit.load(config.policy_path)
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        print(f"Using device: {self.device} 🚀")
+
+        # MODIFICATION: Load the policy onto the selected device (GPU or CPU).
+        self.policy = torch.jit.load(config.policy_path, map_location=self.device)
+        self.policy.to(self.device)
+        
+        self.rr_leg_dof_pos_lower = np.array([-1.0472, -0.5236, -2.7227], dtype=np.float32)
+        self.rr_leg_dof_pos_upper = np.array([1.0472, 4.5379, -0.83776], dtype=np.float32)
+
+        # NEW: State variables for toggle logic
+        self.is_rr_leg_locked = False
+        self.prev_y_button_state = 0
+
         self._warm_up()
 
         self.qj = np.zeros(config.num_actions,dtype=np.float32)
@@ -65,11 +79,20 @@ class Controller:
         init_cmd_go2(self.low_cmd)
         self.use_remote_controller=True
 
+    # def _warm_up(self):
+    #     obs = torch.ones((1,45))
+    #     for _ in range(10):
+    #         _ = self.policy(obs)
+    #     print('Network has been warmed up.')
     def _warm_up(self):
-        obs = torch.ones((1,45))
+        # MODIFICATION: Create dummy tensors on the selected device.
+        obs = torch.ones((1, self.config.num_obs), device=self.device)
+        obs_history = torch.zeros((1, self.config.num_obs * 5), device=self.device)
         for _ in range(10):
-            _ = self.policy(obs)
+            # Call policy with both arguments to match the signature.
+            _ = self.policy(obs, obs_history)
         print('Network has been warmed up.')
+
 
     def wait_for_low_state(self):
         while self.low_state.tick == 0:
@@ -136,6 +159,17 @@ class Controller:
 
 
     def run(self):
+        # --- NEW TOGGLE LOGIC ---
+        # Detect the rising edge of the 'Y' button press to toggle the lock state.
+        current_y_button_state = self.remote_controller.button[KeyMap.Y]
+        if current_y_button_state == 1 and self.prev_y_button_state == 0:
+            self.is_rr_leg_locked = not self.is_rr_leg_locked  # Flip the state
+            if self.is_rr_leg_locked:
+                print("Rear-Right leg -> LOCKED")
+            else:
+                print("Rear-Right leg -> UNLOCKED")
+        self.prev_y_button_state = current_y_button_state
+        # --- END TOGGLE LOGIC ---
         self.counter += 1
         for i in range(12):
             self.qj[i] = self.low_state.motor_state[self.config.joint2motor_idx[i]].q
@@ -164,12 +198,24 @@ class Controller:
         # 更新 obs_history：滑动窗口（扔掉最旧的 45，接入当前的 45）
         self.obs_history = np.concatenate([self.obs_history[self.config.num_obs:], self.obs])
 
-        obs_tensor = torch.from_numpy(self.obs).unsqueeze(0)
-        obs_hist_tensor = torch.from_numpy(self.obs_history).unsqueeze(0)  # [1, 225]
+        obs_tensor = torch.from_numpy(self.obs).unsqueeze(0).to(self.device)
+        obs_hist_tensor = torch.from_numpy(self.obs_history).unsqueeze(0).to(self.device)
         with torch.no_grad():
-            self.action = self.policy(obs_tensor, obs_hist_tensor).detach().numpy().squeeze()
+            # MODIFICATION: Move policy output back to CPU before converting to numpy. This is crucial when using CUDA.
+            self.action = self.policy(obs_tensor, obs_hist_tensor).detach().cpu().numpy().squeeze()
+
         target_dof_pos = self.config.default_angles + self.action * self.config.action_scale
         # target_dof_pos = self.config.default_angles
+
+        if self.is_rr_leg_locked:
+            target_dof_pos[9] = 0.5   # RR_hip
+            target_dof_pos[10] = 0.8  # RR_thigh
+            target_dof_pos[11] = -2.6 # RR_calf
+
+        # MODIFICATION: Apply safety clipping ONLY to the rear-right leg's target positions.
+        # The other motors (0-8) are now unaffected by this clipping logic.
+        target_dof_pos[9:12] = np.clip(target_dof_pos[9:12], self.rr_leg_dof_pos_lower, self.rr_leg_dof_pos_upper)
+
 
         for i in range(12):
             motor_idx = self.config.joint2motor_idx[i]
