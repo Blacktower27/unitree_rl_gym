@@ -21,7 +21,7 @@ default_angles: [  0.1, 0.8, -1.5,
 obs_scales_ang_vel: 0.25
 obs_scales_dof_pos: 1.0
 obs_scales_dof_vel: 0.05
-command_scale: [1.0, 1.0, 0.8]
+command_scale: [1.0, 1.0, 0.5]
 
 action_scale: 0.25
 num_actions: 12

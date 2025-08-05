@@ -43,7 +43,7 @@ class Controller:
 
         # self.policy = torch.jit.load(config.policy_path)
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        print(f"Using device: {self.device} 🚀")
+        print(f"Using device: {self.device}")
 
         # MODIFICATION: Load the policy onto the selected device (GPU or CPU).
         self.policy = torch.jit.load(config.policy_path, map_location=self.device)
@@ -208,8 +208,8 @@ class Controller:
         # target_dof_pos = self.config.default_angles
 
         if self.is_rr_leg_locked:
-            target_dof_pos[9] = 0.5   # RR_hip
-            target_dof_pos[10] = 0.8  # RR_thigh
+            target_dof_pos[9] = 0.0   # RR_hip
+            target_dof_pos[10] = 1.0  # RR_thigh
             target_dof_pos[11] = -2.6 # RR_calf
 
         # MODIFICATION: Apply safety clipping ONLY to the rear-right leg's target positions.
