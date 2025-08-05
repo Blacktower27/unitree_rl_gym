@@ -49,6 +49,7 @@ class Controller:
         self.action = np.zeros(config.num_actions,dtype=np.float32)
         self.target_dof_pos = config.default_angles.copy()
         self.obs = np.zeros(config.num_obs,dtype=np.float32)
+        self.obs_history = np.zeros(config.num_obs * 5, dtype=np.float32)
         self.cmd = np.array([0, 0, 0],dtype=np.float32)
         self.counter = 0
 
@@ -58,11 +59,11 @@ class Controller:
         self.lowcmd_publisher.Init()
         self.lowstate_subscriber = ChannelSubscriber(config.lowstate_topic,LowStateGo)
         self.lowstate_subscriber.Init(self.LowStateHandler,10)
-        self.use_remote_controller = True
         # self.replay_buffer = ReplayBuffer(max_replay_buffer_size=200,flag='real_new')
 
         self.wait_for_low_state()
         init_cmd_go2(self.low_cmd)
+        self.use_remote_controller=True
 
     def _warm_up(self):
         obs = torch.ones((1,45))
@@ -160,10 +161,13 @@ class Controller:
         self.obs[9:21] = qj_obs
         self.obs[21:33] = dqj_obs
         self.obs[33:45] = self.action
+        # 更新 obs_history：滑动窗口（扔掉最旧的 45，接入当前的 45）
+        self.obs_history = np.concatenate([self.obs_history[self.config.num_obs:], self.obs])
 
         obs_tensor = torch.from_numpy(self.obs).unsqueeze(0)
-        self.action = self.policy(obs_tensor).detach().numpy().squeeze()
-
+        obs_hist_tensor = torch.from_numpy(self.obs_history).unsqueeze(0)  # [1, 225]
+        with torch.no_grad():
+            self.action = self.policy(obs_tensor, obs_hist_tensor).detach().numpy().squeeze()
         target_dof_pos = self.config.default_angles + self.action * self.config.action_scale
         # target_dof_pos = self.config.default_angles
 
